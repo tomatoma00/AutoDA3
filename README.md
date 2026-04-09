@@ -1,4 +1,4 @@
-# AutoDA3
+# AutoDA3 (Under testing)
 **Auto3R for Depth-Anything-3**
 
 Official implementation of **Auto3R: Automated 3D Reconstruction and Scanning via Data-driven Uncertainty Quantification** based on **Depth-Anything-3**

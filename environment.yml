@@ -1,0 +1,19 @@
+name: auto3r
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - pytorch=2.0.1
+  - plyfile=0.8.1
+  - python=3.10
+  - setuptools<81
+  - pip
+  - torchaudio
+  - torchvision
+  - tqdm
+  - jupyter
+  - pip:
+      - einops
+      - ipdb

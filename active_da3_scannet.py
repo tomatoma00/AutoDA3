@@ -38,6 +38,20 @@ from utils.cluster_manager import ClusterStateManager
 
 csm = ClusterStateManager()
 
+
+@dataclass
+class SimpleCamera:
+    uid: int
+    image_name: str
+    image_path: str
+    image_width: int
+    image_height: int
+    K: np.ndarray
+    E: np.ndarray
+    inference_image: np.ndarray
+    original_image: torch.Tensor
+    camera_center: torch.Tensor
+
 def _bytes_to_gb(num_bytes: int) -> float:
     return float(num_bytes) / (1024.0 ** 3)
 
@@ -53,20 +67,6 @@ def report_cuda_memory(iteration: int):
         f"[ITER {iteration}] VRAM current={_bytes_to_gb(current_alloc):.3f} GB, "
         f"peak={_bytes_to_gb(peak_alloc):.3f} GB"
     )
-
-@dataclass
-class SimpleCamera:
-    uid: int
-    image_name: str
-    image_path: str
-    image_width: int
-    image_height: int
-    K: np.ndarray
-    E: np.ndarray
-    inference_image: np.ndarray
-    original_image: torch.Tensor
-    camera_center: torch.Tensor
-
 
 class ActiveSceneLite:
     def __init__(self, cameras: List[SimpleCamera], model_path: str, init_trainidx:list):
@@ -156,6 +156,20 @@ def preprocess_single_image_and_k(
     return img_np, k_new
 
 
+def normalize_w2c_like_da3(extrinsics: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    if extrinsics.ndim != 3 or extrinsics.shape[1:] != (4, 4):
+        raise ValueError(f"extrinsics must be (N, 4, 4), got {extrinsics.shape}")
+    ex = extrinsics.astype(np.float32, copy=True)
+    transform = np.linalg.inv(ex[:1])
+    ex_norm = ex @ transform
+    c2w = np.linalg.inv(ex_norm)
+    translations = c2w[:, :3, 3]
+    dists = np.linalg.norm(translations, axis=-1)
+    median_dist = max(float(np.median(dists)), 1e-1)
+    ex_norm[:, :3, 3] /= max(median_dist, eps)
+    return ex_norm.astype(np.float32)
+
+
 def get_da3_normalization_params(extrinsics: np.ndarray, eps: float = 1e-8) -> tuple[np.ndarray, float]:
     if extrinsics.ndim != 3 or extrinsics.shape[1:] != (4, 4):
         raise ValueError(f"extrinsics must be (N, 4, 4), got {extrinsics.shape}")
@@ -182,7 +196,7 @@ def load_images_and_poses(data_dir: str) -> tuple[list[str], np.ndarray]:
     """Load frame-*.color.png and corresponding frame-*.pose.txt as (N, 4, 4)."""
     import glob
 
-    image_pattern = os.path.join(data_dir, "frame-*.color.png")
+    image_pattern = os.path.join(data_dir, "*.jpg")
     image_paths = sorted(glob.glob(image_pattern))
 
     if not image_paths:
@@ -191,7 +205,7 @@ def load_images_and_poses(data_dir: str) -> tuple[list[str], np.ndarray]:
     poses = []
     for image_path in image_paths:
         image_name = os.path.basename(image_path)
-        pose_name = image_name.replace(".color.png", ".pose.txt")
+        pose_name = image_name.replace(".jpg", ".txt")
         pose_path = os.path.join(data_dir, pose_name)
 
         if not os.path.exists(pose_path):
@@ -213,12 +227,13 @@ def build_active_scene_lite(dataset, model_path: str, init_trainidx:list) -> Act
     cameras=[]
     base_k = np.array(
         [
-            [525.0, 0.0, 319.5],
-            [0.0, 525.0, 239.5],
+            [1165.723022, 0.0, 649.094971],
+            [0.0, 1165.738037, 484.765015],
             [0.0, 0.0, 1.0],
         ],
         dtype=np.float32,
     )
+
     for i in range(len(image_paths)):
         image_np, K = preprocess_single_image_and_k(image_paths[i], base_k, target_width=504)
         image_tensor = torch.from_numpy(image_np.astype(np.float32) / 255.0).permute(2, 0, 1)
@@ -312,7 +327,7 @@ def render_prediction_batch(prediction, cams, da3_transform, da3_median_dist, ch
     w2c_list, k_list = [], []
     for cam in cams:
         w2c, k = camera_to_w2c_and_k(cam)
-        w2c_list.append(w2c)
+        w2c_list.append(w2c)  # Use full 4x4 matrix, same as in build_da3_prediction
         k_list.append(k)
 
     w2c_np = np.stack(w2c_list, axis=0)
@@ -333,7 +348,7 @@ def render_prediction_batch(prediction, cams, da3_transform, da3_median_dist, ch
         color_mode="RGB+ED",
         enable_tqdm=False,
     )
-
+    
     # Return [V, 3, H, W] and [V, H, W]
     return color[0], depth[0]
 
@@ -422,7 +437,7 @@ def save_da3_prediction_ply(prediction, model_path, iteration):
 def training(dataset,testing_iterations, saving_iterations, args):
     # init
     tb_writer = prepare_output_and_logger(dataset)
-    scene = build_active_scene_lite(dataset, args.model_path,init_trainidx=[0,8,16])
+    scene = build_active_scene_lite(dataset, args.model_path,init_trainidx=[0,15,30,45,60])
 
     uqmodel = ResNet50Regressor(pretrained=True).to(device)
     uqmodel.eval()
@@ -508,7 +523,7 @@ def training(dataset,testing_iterations, saving_iterations, args):
                 batch_img,
                 batch_depth_uq,
                 uqsavedir,
-                [f"{c.image_name}.png" for c in batch_cams],
+                [f"{c.image_name}.jpg" for c in batch_cams],
                 batch_size=B,
                 iter=iteration,
             )
